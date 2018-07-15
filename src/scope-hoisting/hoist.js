@@ -135,6 +135,36 @@ module.exports = {
         ) {
           scope.push({id: exportsIdentifier, init: t.objectExpression([])});
         }
+
+        // Move all "var" variables to the top-level to prevent out of order definitions when wrapped.
+        for (let name in scope.bindings) {
+          let binding = scope.getBinding(name);
+
+          if (binding.path.scope !== scope && binding.kind === 'var') {
+            let {parentPath} = binding.path;
+
+            if (!parentPath.removed) {
+              if (parentPath.node.declarations.length) {
+                binding.path.getStatementParent().insertBefore(
+                  parentPath.node.declarations
+                    .map(decl => {
+                      binding.scope.removeBinding(decl.id.name);
+                      scope.push({id: decl.id});
+
+                      return decl.init
+                        ? t.assignmentExpression('=', decl.id, decl.init)
+                        : null;
+                    })
+                    .filter(decl => decl !== null)
+                );
+              }
+
+              parentPath.remove();
+            }
+
+            binding.path.remove();
+          }
+        }
       }
 
       path.stop();
@@ -280,8 +310,9 @@ module.exports = {
     }
 
     if (t.isIdentifier(callee, {name: 'require'})) {
+      let source = args[0].value;
       // Ignore require calls that were ignored earlier.
-      if (!asset.dependencies.has(args[0].value)) {
+      if (!asset.dependencies.has(source)) {
         return;
       }
 
@@ -296,8 +327,10 @@ module.exports = {
           p.isSequenceExpression()
       );
       if (!parent.isProgram() || bail) {
-        asset.dependencies.get(args[0].value).shouldWrap = true;
+        asset.dependencies.get(source).shouldWrap = true;
       }
+
+      asset.cacheData.imports['$require$' + source] = [source, '*'];
 
       // Generate a variable name based on the current asset id and the module name to require.
       // This will be replaced by the final variable name of the resolved asset in the packager.
